@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "WebTime - Local Time Tracker",
+  "version": "1.0.0",
+  "description": "Track your browsing time privately. All data stored locally on your device.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "idle",
+    "favicon"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
+}

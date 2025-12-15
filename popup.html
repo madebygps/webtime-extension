@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebTime</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🕐 WebTime</h1>
+      <p class="subtitle">Your private browsing tracker</p>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="today">Today</button>
+      <button class="tab-btn" data-tab="week">This Week</button>
+      <button class="tab-btn" data-tab="all">All Time</button>
+    </nav>
+
+    <main>
+      <section id="today" class="tab-content active">
+        <div class="stats-summary">
+          <div class="stat-card">
+            <span class="stat-value" id="today-total">0m</span>
+            <span class="stat-label">Total Today</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="today-sites">0</span>
+            <span class="stat-label">Sites Visited</span>
+          </div>
+        </div>
+        <div class="site-list" id="today-list"></div>
+      </section>
+
+      <section id="week" class="tab-content">
+        <div class="stats-summary">
+          <div class="stat-card">
+            <span class="stat-value" id="week-total">0m</span>
+            <span class="stat-label">Total This Week</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="week-sites">0</span>
+            <span class="stat-label">Sites Visited</span>
+          </div>
+        </div>
+        <div class="site-list" id="week-list"></div>
+      </section>
+
+      <section id="all" class="tab-content">
+        <div class="stats-summary">
+          <div class="stat-card">
+            <span class="stat-value" id="all-total">0m</span>
+            <span class="stat-label">All Time</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-value" id="all-sites">0</span>
+            <span class="stat-label">Sites Visited</span>
+          </div>
+        </div>
+        <div class="site-list" id="all-list"></div>
+      </section>
+    </main>
+
+    <footer>
+      <button id="export-btn" class="action-btn">📥 Export Data</button>
+      <button id="clear-btn" class="action-btn danger">🗑️ Clear Data</button>
+    </footer>
+
+    <div class="privacy-notice">
+      🔒 All data stored locally on your device
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
