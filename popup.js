@@ -140,7 +140,67 @@ function displayTodayStats(webTimeData) {
   
   document.getElementById('today-sites').textContent = `${siteCount} site${siteCount !== 1 ? 's' : ''}`;
   
+  displayActivityChart(webTimeData);
   displaySiteList('today-list', sites);
+}
+
+// Display activity chart for today
+function displayActivityChart(webTimeData) {
+  const todayKey = getTodayKey();
+  const hourlyData = webTimeData.hourlyStats?.[todayKey] || {};
+  const currentHour = new Date().getHours();
+  
+  // Create array of 24 hours with their data
+  const hours = Array.from({ length: 24 }, (_, i) => ({
+    hour: i,
+    time: hourlyData[i] || 0
+  }));
+  
+  // Find max time for scaling and peak hour
+  const maxTime = Math.max(...hours.map(h => h.time), 1);
+  const peakHour = hours.reduce((peak, h) => h.time > peak.time ? h : peak, hours[0]);
+  
+  // Show every 3rd hour label (0, 3, 6, 9, 12, 15, 18, 21)
+  const showLabels = [0, 3, 6, 9, 12, 15, 18, 21];
+  
+  // Max bar height in pixels (leaving room for labels)
+  const maxBarHeight = 60;
+  
+  const chartHtml = hours.map(({ hour, time }) => {
+    const heightPx = time > 0 ? Math.max((time / maxTime) * maxBarHeight, 2) : 2;
+    const isPeak = hour === peakHour.hour && time > 0;
+    const isCurrent = hour === currentHour;
+    const isEmpty = time === 0;
+    
+    const label = showLabels.includes(hour) 
+      ? (hour === 0 ? '12a' : hour < 12 ? `${hour}a` : hour === 12 ? '12p' : `${hour-12}p`)
+      : '';
+    
+    const timeLabel = hour === 0 ? '12am' : hour < 12 ? `${hour}am` : hour === 12 ? '12pm' : `${hour-12}pm`;
+    
+    return `
+      <div class="chart-bar-wrapper" data-tooltip="${formatTime(time)} at ${timeLabel}">
+        <div class="chart-bar ${isEmpty ? 'empty' : ''} ${isPeak ? 'peak' : ''} ${isCurrent ? 'current' : ''}" 
+             style="height: ${heightPx}px"></div>
+        ${label ? `<span class="chart-label ${isCurrent ? 'current' : ''} ${isPeak ? 'peak' : ''}">${label}</span>` : ''}
+        ${isCurrent && !label ? '<span class="current-dot"></span>' : ''}
+      </div>
+    `;
+  }).join('');
+  
+  document.getElementById('activity-chart').innerHTML = chartHtml;
+  
+  // Update peak hour display
+  const peakEl = document.getElementById('peak-hour');
+  if (peakHour.time > 0) {
+    const peakHourLabel = peakHour.hour === 0 ? '12am' 
+      : peakHour.hour < 12 ? `${peakHour.hour}am` 
+      : peakHour.hour === 12 ? '12pm' 
+      : `${peakHour.hour - 12}pm`;
+    peakEl.textContent = `Peak: ${peakHourLabel}`;
+  } else {
+    peakEl.textContent = '';
+  }
 }
 
 // Display week stats
@@ -241,8 +301,8 @@ function sanitizeUrl(url) {
   if (!url) return '';
   try {
     const parsed = new URL(url);
-    // Only allow chrome-extension:// and https:// protocols
-    if (parsed.protocol === 'chrome-extension:' || parsed.protocol === 'https:') {
+    // Only allow https:// protocol (for Google favicon service)
+    if (parsed.protocol === 'https:') {
       return url;
     }
     return '';
@@ -284,6 +344,7 @@ async function clearData() {
         webtime_data: {
           sites: {},
           dailyStats: {},
+          hourlyStats: {},
           lastUpdated: Date.now()
         }
       });

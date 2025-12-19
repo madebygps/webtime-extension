@@ -1,26 +1,50 @@
 // WebTime Background Service Worker
 // All data stored locally using chrome.storage.local - no external servers
+// Uses heartbeat-based tracking for accurate time measurement
 
-let activeTabId = null;
-let activeTabUrl = null;
-let startTime = null;
-let isIdle = false;
+const HEARTBEAT_INTERVAL_SECONDS = 30;
+const MAX_VALID_GAP_MS = 45 * 1000; // 45 seconds - if gap is larger, system was likely asleep
 
 // Initialize on install
 chrome.runtime.onInstalled.addListener(() => {
   console.log('WebTime installed - tracking time privately');
   initializeStorage();
+  setupHeartbeatAlarm();
 });
+
+// Also setup alarm on startup (service worker restart)
+chrome.runtime.onStartup.addListener(() => {
+  setupHeartbeatAlarm();
+});
+
+// Setup the heartbeat alarm
+function setupHeartbeatAlarm() {
+  chrome.alarms.create('heartbeat', {
+    periodInMinutes: HEARTBEAT_INTERVAL_SECONDS / 60
+  });
+}
 
 // Initialize storage structure
 async function initializeStorage() {
-  const data = await chrome.storage.local.get(['webtime_data']);
+  const data = await chrome.storage.local.get(['webtime_data', 'webtime_tracking']);
+  
   if (!data.webtime_data) {
     await chrome.storage.local.set({
       webtime_data: {
         sites: {},
         dailyStats: {},
+        hourlyStats: {},
         lastUpdated: Date.now()
+      }
+    });
+  }
+  
+  if (!data.webtime_tracking) {
+    await chrome.storage.local.set({
+      webtime_tracking: {
+        activeTabUrl: null,
+        lastHeartbeat: null,
+        isIdle: false
       }
     });
   }
@@ -64,27 +88,69 @@ function getTodayKey() {
   return `${year}-${month}-${day}`;
 }
 
-// Get favicon URL using Chrome's local favicon cache (no external requests)
+// Get favicon URL using Google's favicon service
 function getFaviconUrl(domain) {
-  // Use chrome-extension:// favicon API - fully local, no network requests
-  return `chrome-extension://${chrome.runtime.id}/_favicon/?pageUrl=https://${encodeURIComponent(domain)}&size=32`;
+  // Use Google's favicon service - reliable and works in all browsers
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32`;
 }
 
-// Save time for the current active tab
-async function saveTimeForActiveTab() {
-  if (!activeTabUrl || !startTime || isIdle) return;
+// Heartbeat handler - called by chrome.alarms
+async function handleHeartbeat() {
+  const now = Date.now();
   
-  const domain = getDomain(activeTabUrl);
-  if (!shouldTrackDomain(domain)) return;
-  
-  const timeSpent = Date.now() - startTime;
-  if (timeSpent < 1000) return; // Ignore less than 1 second
-  
+  try {
+    const { webtime_tracking } = await chrome.storage.local.get(['webtime_tracking']);
+    const tracking = webtime_tracking || { activeTabUrl: null, lastHeartbeat: null, isIdle: false };
+    
+    // Don't track if idle
+    if (tracking.isIdle) {
+      tracking.lastHeartbeat = now;
+      await chrome.storage.local.set({ webtime_tracking: tracking });
+      return;
+    }
+    
+    // Don't track if no active URL
+    if (!tracking.activeTabUrl) {
+      tracking.lastHeartbeat = now;
+      await chrome.storage.local.set({ webtime_tracking: tracking });
+      return;
+    }
+    
+    const domain = getDomain(tracking.activeTabUrl);
+    if (!shouldTrackDomain(domain)) {
+      tracking.lastHeartbeat = now;
+      await chrome.storage.local.set({ webtime_tracking: tracking });
+      return;
+    }
+    
+    // Calculate time since last heartbeat
+    if (tracking.lastHeartbeat) {
+      const gap = now - tracking.lastHeartbeat;
+      
+      // Only record time if the gap is reasonable (system wasn't asleep)
+      if (gap <= MAX_VALID_GAP_MS && gap >= 1000) {
+        await recordTime(domain, gap);
+      }
+      // If gap > MAX_VALID_GAP_MS, we assume system was asleep and discard the time
+    }
+    
+    // Update last heartbeat
+    tracking.lastHeartbeat = now;
+    await chrome.storage.local.set({ webtime_tracking: tracking });
+    
+  } catch (error) {
+    console.error('Error in heartbeat:', error);
+  }
+}
+
+// Record time for a domain
+async function recordTime(domain, timeMs) {
   const todayKey = getTodayKey();
+  const now = new Date();
   
   try {
     const data = await chrome.storage.local.get(['webtime_data']);
-    const webTimeData = data.webtime_data || { sites: {}, dailyStats: {} };
+    const webTimeData = data.webtime_data || { sites: {}, dailyStats: {}, hourlyStats: {} };
     
     // Initialize site if not exists
     if (!webTimeData.sites[domain]) {
@@ -108,17 +174,30 @@ async function saveTimeForActiveTab() {
       };
     }
     
+    // Initialize hourly stats if not exists
+    if (!webTimeData.hourlyStats) {
+      webTimeData.hourlyStats = {};
+    }
+    
+    if (!webTimeData.hourlyStats[todayKey]) {
+      webTimeData.hourlyStats[todayKey] = {};
+    }
+    
+    const currentHour = now.getHours();
+    if (!webTimeData.hourlyStats[todayKey][currentHour]) {
+      webTimeData.hourlyStats[todayKey][currentHour] = 0;
+    }
+    
     // Update total time
-    webTimeData.sites[domain].totalTime += timeSpent;
-    webTimeData.dailyStats[todayKey][domain].time += timeSpent;
+    webTimeData.sites[domain].totalTime += timeMs;
+    webTimeData.dailyStats[todayKey][domain].time += timeMs;
+    webTimeData.hourlyStats[todayKey][currentHour] += timeMs;
     webTimeData.lastUpdated = Date.now();
     
     await chrome.storage.local.set({ webtime_data: webTimeData });
   } catch (error) {
-    console.error('Error saving time:', error);
+    console.error('Error recording time:', error);
   }
-  
-  startTime = Date.now();
 }
 
 // Record visit for a domain
@@ -164,17 +243,44 @@ async function recordVisit(domain) {
   }
 }
 
+// Update active tab URL in persistent storage
+async function setActiveTab(url) {
+  const { webtime_tracking } = await chrome.storage.local.get(['webtime_tracking']);
+  const tracking = webtime_tracking || { activeTabUrl: null, lastHeartbeat: null, isIdle: false };
+  
+  tracking.activeTabUrl = url;
+  tracking.lastHeartbeat = Date.now(); // Reset heartbeat when changing tabs
+  
+  await chrome.storage.local.set({ webtime_tracking: tracking });
+}
+
+// Update idle state in persistent storage
+async function setIdleState(idle) {
+  const { webtime_tracking } = await chrome.storage.local.get(['webtime_tracking']);
+  const tracking = webtime_tracking || { activeTabUrl: null, lastHeartbeat: null, isIdle: false };
+  
+  tracking.isIdle = idle;
+  if (!idle) {
+    // Reset heartbeat when becoming active to avoid counting sleep time
+    tracking.lastHeartbeat = Date.now();
+  }
+  
+  await chrome.storage.local.set({ webtime_tracking: tracking });
+}
+
+// Handle alarm events
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'heartbeat') {
+    handleHeartbeat();
+  }
+});
+
 // Handle tab activation
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
-  await saveTimeForActiveTab();
-  
   try {
     const tab = await chrome.tabs.get(activeInfo.tabId);
     if (tab.url) {
-      activeTabId = activeInfo.tabId;
-      activeTabUrl = tab.url;
-      startTime = Date.now();
-      
+      await setActiveTab(tab.url);
       const domain = getDomain(tab.url);
       await recordVisit(domain);
     }
@@ -185,50 +291,70 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
 // Handle tab URL updates
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (tabId === activeTabId && changeInfo.url) {
-    await saveTimeForActiveTab();
-    
-    activeTabUrl = changeInfo.url;
-    startTime = Date.now();
-    
-    const domain = getDomain(changeInfo.url);
-    await recordVisit(domain);
+  // Check if this is the active tab
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTab && tabId === activeTab.id && changeInfo.url) {
+      await setActiveTab(changeInfo.url);
+      const domain = getDomain(changeInfo.url);
+      await recordVisit(domain);
+    }
+  } catch (error) {
+    console.error('Error on tab update:', error);
   }
 });
 
 // Handle window focus changes
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) {
-    await saveTimeForActiveTab();
-    isIdle = true;
+    await setIdleState(true);
   } else {
-    isIdle = false;
-    startTime = Date.now();
+    await setIdleState(false);
+    // Re-capture active tab when window regains focus
+    try {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (activeTab && activeTab.url) {
+        await setActiveTab(activeTab.url);
+      }
+    } catch (error) {
+      console.error('Error getting active tab on focus:', error);
+    }
   }
 });
 
 // Handle idle state
 chrome.idle.onStateChanged.addListener(async (state) => {
   if (state === 'idle' || state === 'locked') {
-    await saveTimeForActiveTab();
-    isIdle = true;
+    await setIdleState(true);
   } else if (state === 'active') {
-    isIdle = false;
-    startTime = Date.now();
+    await setIdleState(false);
+    // Re-capture active tab when becoming active
+    try {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (activeTab && activeTab.url) {
+        await setActiveTab(activeTab.url);
+      }
+    } catch (error) {
+      console.error('Error getting active tab on active:', error);
+    }
   }
 });
 
 // Set idle detection interval (60 seconds)
 chrome.idle.setDetectionInterval(60);
 
-// Periodic save (every 30 seconds)
-setInterval(saveTimeForActiveTab, 30000);
-
-// Initialize tracking on startup
-chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-  if (tabs[0] && tabs[0].url) {
-    activeTabId = tabs[0].id;
-    activeTabUrl = tabs[0].url;
-    startTime = Date.now();
+// Initialize on service worker startup
+(async () => {
+  await initializeStorage();
+  setupHeartbeatAlarm();
+  
+  // Capture current active tab
+  try {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTab && activeTab.url) {
+      await setActiveTab(activeTab.url);
+    }
+  } catch (error) {
+    console.error('Error initializing active tab:', error);
   }
-});
+})();
